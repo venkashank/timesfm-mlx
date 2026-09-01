@@ -178,6 +178,20 @@ TimesFM 3.0 weights retain their non-commercial license after loading or
 conversion. See [`MLX_MIGRATION.md`](MLX_MIGRATION.md) for parity status,
 benchmark methodology, and remaining work.
 
+To verify MLX FP32 against a separate checkout of the original PyTorch code:
+
+```shell
+uv run --extra torch --extra mlx benchmarks/verify_mlx_parity.py \
+  --upstream-root ../timesfm \
+  --local-files-only
+```
+
+The verifier runs both implementations in isolated processes and checks the
+official checkpoint at `rtol=atol=2e-5`. It covers variable-length univariate
+series, native multivariate covariates, forecast post-processing, 32-variate
+attention, and long context/horizon inference. FP16 is an optimized mode and
+is quality-checked separately rather than expected to meet FP32 parity.
+
 --------------------------------------------------------------------------------
 
 ### Code Examples: TimesFM 3.0

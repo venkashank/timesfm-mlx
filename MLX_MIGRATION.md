@@ -101,6 +101,12 @@ stopping timers and include sustained runs on fanless MacBook Air hardware.
   checkpoint also passed univariate, multivariate, evaluator, and direct
   backend smoke tests. Archived v1 collection remains blocked by its historical
   package-path mismatch noted below.
+- 2026-08-31: Added an isolated-process verifier that imports PyTorch from the
+  untouched upstream checkout and MLX from this fork. All official-checkpoint
+  cases passed at `rtol=atol=2e-5`; the worst absolute difference was
+  `5.25e-6`. The verifier also confirms that the fork's PyTorch model components
+  remain byte-identical to upstream. Machine-readable results are stored in
+  `benchmarks/results/m4_upstream_parity.json`.
 
 ## Known limitations
 

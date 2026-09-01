@@ -107,15 +107,32 @@ class MLXParityTest(unittest.TestCase):
     target = rng.normal(size=(1, 2, 12)).astype(np.float32)
     past = rng.normal(size=(1, 1, 12)).astype(np.float32)
     future = rng.normal(size=(1, 1, 21)).astype(np.float32)
+    global_mask = np.zeros((1, 12), dtype=bool)
+    global_mask[:, :2] = True
+    target_mask = np.zeros_like(target, dtype=bool)
+    target_mask[:, 0, 5] = True
+    past_mask = np.zeros_like(past, dtype=bool)
+    past_mask[:, :, 7] = True
+    future_mask = np.zeros_like(future, dtype=bool)
+    future_mask[:, :, 4] = True
+    future_mask[:, :, 16] = True
     expected = torch_model.decode(
       torch.from_numpy(target),
       past_only_covariates=torch.from_numpy(past),
       past_future_covariates=torch.from_numpy(future),
+      target_mask=torch.from_numpy(target_mask),
+      past_only_mask=torch.from_numpy(past_mask),
+      past_future_mask=torch.from_numpy(future_mask),
+      mask=torch.from_numpy(global_mask),
     ).numpy()
     actual = mlx_model.decode(
       mx.array(target),
       past_only_covariates=mx.array(past),
       past_future_covariates=mx.array(future),
+      target_mask=mx.array(target_mask),
+      past_only_mask=mx.array(past_mask),
+      past_future_mask=mx.array(future_mask),
+      mask=mx.array(global_mask),
     )
     mx.eval(actual)
     np.testing.assert_allclose(expected, np.asarray(actual), rtol=2e-5, atol=3e-6)
