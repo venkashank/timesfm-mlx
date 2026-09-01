@@ -192,6 +192,22 @@ series, native multivariate covariates, forecast post-processing, 32-variate
 attention, and long context/horizon inference. FP16 is an optimized mode and
 is quality-checked separately rather than expected to meet FP32 parity.
 
+To reproduce the Apple-silicon context/precision benchmark:
+
+```shell
+uv run --with psutil --extra torch --extra mlx \
+  benchmarks/benchmark_context_precision.py \
+  --local-files-only \
+  --output benchmarks/results/m4_context_precision.json \
+  --quiet
+```
+
+On a 32 GB M4 MacBook Air, eager MLX won all 30 comparisons against PyTorch
+MPS: every canonical context from 32 through 15,360 at FP32, FP16, and BF16.
+Geometric-mean speedups were 2.11x, 3.00x, and 2.83x respectively. See the
+[`M4 context/precision report`](benchmarks/results/m4_context_precision.md) for
+the complete latency table and precision-mode caveats.
+
 --------------------------------------------------------------------------------
 
 ### Code Examples: TimesFM 3.0

@@ -137,6 +137,30 @@ class MLXParityTest(unittest.TestCase):
     mx.eval(actual)
     np.testing.assert_allclose(expected, np.asarray(actual), rtol=2e-5, atol=3e-6)
 
+  def test_bfloat16_decode_is_finite(self):
+    residual = configs.ResidualBlockConfig(8, 8, False, "relu")
+    transformer = configs.StackedTransformersConfig(
+      1,
+      configs.TransformerConfig(
+        8, 8, 2, "rms", "rms", "rms", False, True, False, "relu", True
+      ),
+    )
+    model = TimesFM3MLX(
+      input_patch_len=4,
+      output_patch_len=8,
+      quantiles=[0.1, 0.5, 0.9],
+      residual_block_config=residual,
+      transformer_config=transformer,
+    )
+    model.set_dtype(mx.bfloat16)
+    model.compute_dtype = mx.bfloat16
+    target = mx.array(
+      np.random.default_rng(6).normal(size=(1, 1, 12)).astype(np.float32)
+    )
+    output = model.decode(target, horizon=8).astype(mx.float32)
+    mx.eval(output)
+    self.assertTrue(np.isfinite(np.asarray(output)).all())
+
 
 if __name__ == "__main__":
   unittest.main()

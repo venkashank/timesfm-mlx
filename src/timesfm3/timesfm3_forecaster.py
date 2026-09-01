@@ -46,8 +46,8 @@ class _ModelConfig:
   # Tensor runtime used for model inference.
   backend: Literal["torch", "mlx"] = "torch"
 
-  # Model matrix-multiplication precision. MLX supports float32 and float16.
-  dtype: Literal["float32", "float16"] = "float32"
+  # Model matrix-multiplication precision.
+  dtype: Literal["float32", "float16", "bfloat16"] = "float32"
 
   # Compile and cache MLX decode graphs by static input-shape bucket.
   compile: bool = False

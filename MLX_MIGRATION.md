@@ -60,10 +60,10 @@ Compare PyTorch CPU, PyTorch MPS, and MLX using both cold and warmed runs:
 | Dimension | Values |
 | --- | --- |
 | Batch | 1, 4, 16 |
-| Context | 512, 2,048, 15,360 |
+| Context | 32, 64, 128, 256, 512, 1,024, 2,048, 4,096, 8,192, 15,360 |
 | Horizon | 64, 256, 1,024 |
 | Variates | 1, 8, 32 |
-| Precision | FP32, FP16 |
+| Precision | FP32, FP16, BF16 |
 
 Report wall-clock latency, series per second, peak active memory, model-load
 time, and compilation time separately. Benchmarks must synchronize MLX before
@@ -107,11 +107,18 @@ stopping timers and include sustained runs on fanless MacBook Air hardware.
   `5.25e-6`. The verifier also confirms that the fork's PyTorch model components
   remain byte-identical to upstream. Machine-readable results are stored in
   `benchmarks/results/m4_upstream_parity.json`.
+- 2026-08-31: Ran the synchronized eager-backend context/precision matrix on a
+  32 GB M4 MacBook Air. MLX beat PyTorch MPS at all 30 combinations across ten
+  canonical contexts and FP32/FP16/BF16. Geometric-mean MLX speedups were
+  2.11x, 3.00x, and 2.83x respectively. FP32 remained within `5.37e-6` of the
+  PyTorch reference. Results and caveats are recorded in
+  `benchmarks/results/m4_context_precision.md` and its adjacent JSON file.
 
 ## Known limitations
 
 - The MLX backend is inference-only and requires Apple-silicon macOS.
-- FP16 is close to FP32 but is not bitwise identical; use FP32 for parity work.
+- FP16 and BF16 are close to FP32 but are not bitwise identical; use FP32 for
+  parity work.
 - Compiled graphs have a substantial first-use cost and are cached only within
   the current process.
 - KV-cache support is not ported because the public forecast path is currently

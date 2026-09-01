@@ -20,7 +20,9 @@ from timesfm3 import ModelConfig, TimesFM3Forecaster
 def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--backend", choices=["torch", "mlx"], required=True)
-  parser.add_argument("--dtype", choices=["float32", "float16"], default="float32")
+  parser.add_argument(
+    "--dtype", choices=["float32", "float16", "bfloat16"], default="float32"
+  )
   parser.add_argument("--device", default=None)
   parser.add_argument("--checkpoint", default="google/timesfm-3.0-pytorch")
   parser.add_argument("--batch", type=int, default=1)

@@ -64,7 +64,11 @@ def load_mlx_model(config: Any) -> TimesFM3MLX:
     }
     weight_files = [weight_file]
   model = TimesFM3MLX(**model_config)
-  dtype = mx.float16 if config.dtype == "float16" else mx.float32
+  dtype = {
+    "float32": mx.float32,
+    "float16": mx.float16,
+    "bfloat16": mx.bfloat16,
+  }[config.dtype]
   model.set_dtype(dtype)
   model.compute_dtype = dtype
   weights: dict[str, mx.array] = {}
@@ -186,6 +190,9 @@ class MLXBackend:
       mx.array(mask, dtype=mx.bool_),
     )
     mx.eval(output)
+    if output.dtype == mx.bfloat16:
+      output = output.astype(mx.float32)
+      mx.eval(output)
     return np.asarray(output)
 
   def cleanup(self) -> None:

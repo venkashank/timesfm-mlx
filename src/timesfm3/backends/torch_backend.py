@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import os
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -78,6 +79,11 @@ class TorchBackend:
       if config.device is not None
       else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
+    self.dtype = {
+      "float32": torch.float32,
+      "float16": torch.float16,
+      "bfloat16": torch.bfloat16,
+    }[config.dtype]
     checkpoint_path = os.path.expanduser(config.checkpoint_path)
     is_local_dir = os.path.isdir(checkpoint_path)
     is_local_file = os.path.isfile(checkpoint_path)
@@ -129,7 +135,12 @@ class TorchBackend:
       if past_future_covariates is not None
       else None
     )
-    with torch.inference_mode():
+    autocast = (
+      torch.autocast(device_type=self.device.type, dtype=self.dtype)
+      if self.dtype != torch.float32
+      else nullcontext()
+    )
+    with torch.inference_mode(), autocast:
       output = self.model.decode(
         target=target_tensor,
         horizon=horizon,
@@ -137,7 +148,7 @@ class TorchBackend:
         past_future_covariates=pf_tensor,
         mask=mask_tensor,
       )
-    return output.cpu().numpy()
+    return output.float().cpu().numpy()
 
   def cleanup(self) -> None:
     if self.device.type == "cuda":
