@@ -145,6 +145,69 @@ pip install timesfm[torch]
     uv pip install -e .[torch]
     ```
 
+#### Apple silicon with MLX
+
+The `timesfm-mlx` fork includes a native MLX inference backend for TimesFM 3.0:
+
+```shell
+uv sync --extra mlx
+```
+
+```python
+import numpy as np
+from timesfm3 import ModelConfig, TimesFM3Forecaster
+
+forecaster = TimesFM3Forecaster(
+    ModelConfig(
+        checkpoint_path="google/timesfm-3.0-pytorch",
+        backend="mlx",
+        dtype="float16",  # use float32 for strict Torch parity
+        compile=False,    # opt in after shapes repeat; compilation has cold cost
+        per_core_batch_size=16,
+    )
+)
+output = forecaster.predict(
+    np.sin(np.linspace(0, 12, 512)).astype(np.float32),
+    horizon=64,
+    return_quantiles=True,
+)
+```
+
+MLX loads the official safetensors directly and does not require PyTorch.
+TimesFM 3.0 weights retain their non-commercial license after loading or
+conversion. See [`MLX_MIGRATION.md`](MLX_MIGRATION.md) for parity status,
+benchmark methodology, and remaining work.
+
+To verify MLX FP32 against a separate checkout of the original PyTorch code:
+
+```shell
+uv run --extra torch --extra mlx benchmarks/verify_mlx_parity.py \
+  --upstream-root ../timesfm \
+  --local-files-only
+```
+
+The verifier runs both implementations in isolated processes and checks the
+official checkpoint at `rtol=atol=2e-5`. It covers variable-length univariate
+series, native multivariate covariates, forecast post-processing, 32-variate
+attention, and long context/horizon inference. FP16 is an optimized mode and
+is quality-checked separately rather than expected to meet FP32 parity.
+
+To reproduce the Apple-silicon context/precision benchmark:
+
+```shell
+uv run --with psutil --extra torch --extra mlx \
+  benchmarks/benchmark_context_precision.py \
+  --local-files-only \
+  --output benchmarks/results/m4_context_precision.json \
+  --quiet
+```
+
+On a 32 GB M4 MacBook Air, eager MLX won all 30 comparisons against PyTorch
+MPS: every canonical context from 32 through 15,360 at FP32, FP16, and BF16.
+Geometric-mean speedups were 2.11x, 3.00x, and 2.83x respectively. See the
+[`M4 context/precision report`](benchmarks/results/m4_context_precision.md) for
+the complete latency table and precision-mode caveats.
+
 --------------------------------------------------------------------------------
 
 ### Code Examples: TimesFM 3.0

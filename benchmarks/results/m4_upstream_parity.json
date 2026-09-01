@@ -1,0 +1,33 @@
+{
+  "date": "2026-08-31",
+  "checkpoint": "google/timesfm-3.0-pytorch",
+  "oracle": "google-research/timesfm master at 331c6d3",
+  "mlx_base_commit": "5cf100d",
+  "mlx_branch": "feat/mlx-backend",
+  "dtype": "float32",
+  "rtol": 0.00002,
+  "atol": 0.00002,
+  "passed": true,
+  "cases": {
+    "variable_univariate": {
+      "max_abs": 0.000005245208740234375,
+      "mean_abs": 9.572531780577265e-7
+    },
+    "multivariate_covariates": {
+      "max_abs": 0.000003814697265625,
+      "mean_abs": 5.332112209543993e-7
+    },
+    "postprocessing": {
+      "max_abs": 0.0000017285346984863281,
+      "mean_abs": 3.231506582324073e-7
+    },
+    "thirty_two_variates": {
+      "max_abs": 0.000004649162292480469,
+      "mean_abs": 6.588891210412839e-7
+    },
+    "long_context_horizon": {
+      "max_abs": 0.000003337860107421875,
+      "mean_abs": 4.7281193360504403e-7
+    }
+  }
+}
