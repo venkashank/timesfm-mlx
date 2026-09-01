@@ -35,6 +35,9 @@ xreg = [
     "jax[cuda]",
     "scikit-learn",
 ]
+mlx = [
+    "mlx>=0.32.0 ; platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
 
 [tool.ruff]
 line-length = 88

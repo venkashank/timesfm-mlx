@@ -19,30 +19,38 @@ from __future__ import annotations
 import dataclasses
 import gc
 import math
-import os
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
-import torch
 
-from . import configs, util
-from . import model as torch_model_lib
+from . import configs
+from .backends import create_backend
 
 _MAX_CONTEXT_LENGTH = 15360
 _SIGMA_THRESHOLD: float = 1e-7
 _GC_MEMORY_THRESHOLD: float = 0.9
+_MLX_CONTEXT_BUCKETS = (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 15360)
 
 
 @dataclasses.dataclass
 class _ModelConfig:
-  """Configuration for a PyTorch TimesFM3 forecaster."""
+  """Configuration for a TimesFM3 forecaster."""
 
   # Path to checkpoint file (.pth or .safetensors) or Hugging Face repo ID.
   checkpoint_path: str = "google/timesfm-3.0-pytorch"
 
   # Batch size to use for inference.
   per_core_batch_size: int = 4
+
+  # Tensor runtime used for model inference.
+  backend: Literal["torch", "mlx"] = "torch"
+
+  # Model matrix-multiplication precision. MLX supports float32 and float16.
+  dtype: Literal["float32", "float16"] = "float32"
+
+  # Compile and cache MLX decode graphs by static input-shape bucket.
+  compile: bool = False
 
   # Input (context) patch length used by the model.
   input_patch_length: int = 32
@@ -117,19 +125,24 @@ class ForecastOutput:
 
 
 def try_gc(
-  device: torch.device | str | None = None,
+  device: Any = None,
   gc_memory_threshold: float = _GC_MEMORY_THRESHOLD,
 ) -> None:
   """Trigger Python GC and empty CUDA cache if memory exceeds threshold."""
-  if device is not None and torch.cuda.is_available():
-    d = torch.device(device) if isinstance(device, str) else device
-    if d.type == "cuda":
-      allocated = torch.cuda.memory_allocated(d)
-      total = torch.cuda.get_device_properties(d).total_memory
-      if total > 0 and (allocated / total) > gc_memory_threshold:
-        gc.collect()
-        torch.cuda.empty_cache()
-        return
+  try:
+    import torch
+
+    if device is not None and torch.cuda.is_available():
+      d = torch.device(device) if isinstance(device, str) else device
+      if d.type == "cuda":
+        allocated = torch.cuda.memory_allocated(d)
+        total = torch.cuda.get_device_properties(d).total_memory
+        if total > 0 and (allocated / total) > gc_memory_threshold:
+          gc.collect()
+          torch.cuda.empty_cache()
+          return
+  except ImportError:
+    pass
   gc.collect()
 
 
@@ -151,9 +164,7 @@ def linear_interpolation(arr: np.ndarray) -> np.ndarray:
       non_nan_indices = valid_mask.nonzero()[0]
       non_nan_values = row[valid_mask]
       try:
-        row[nan_mask[r]] = np.interp(
-          nan_indices, non_nan_indices, non_nan_values
-        )
+        row[nan_mask[r]] = np.interp(nan_indices, non_nan_indices, non_nan_values)
       except ValueError:
         if non_nan_values.size > 0:
           mu = np.nanmean(row)
@@ -273,63 +284,15 @@ class _Query:
 
 def _make_torch_model(
   config: _ModelConfig,
-) -> torch_model_lib.TimesFM3Torch:
+) -> Any:
   """Builds a PyTorch model using ModelConfig."""
-  resblock_config = (
-    config.residual_block_config
-    if config.residual_block_config is not None
-    else configs.ResidualBlockConfig(
-      hidden_dims=1280,
-      output_dims=1280,
-      use_bias=False,
-      activation="relu",
-    )
-  )
+  from .backends.torch_backend import make_torch_model
 
-  transformer_config = (
-    config.transformer_config
-    if config.transformer_config is not None
-    else configs.StackedTransformersConfig(
-      num_layers=20,
-      transformer=configs.TransformerConfig(
-        model_dims=1280,
-        hidden_dims=1280,
-        num_heads=16,
-        attention_norm="rms",
-        feedforward_norm="rms",
-        qk_norm="rms",
-        use_rope_seq=True,
-        use_rope_var=True,
-        use_bias=False,
-        ff_activation="relu",
-        deterministic=True,
-      ),
-    )
-  )
-
-  t_model = torch_model_lib.TimesFM3Torch(
-    input_patch_len=config.input_patch_length,
-    output_patch_len=config.output_patch_length,
-    quantiles=config.quantiles,
-    use_variate_attention=config.use_variate_attention,
-    value_clip=config.value_clip,
-    input_transform=config.input_transform,
-    use_stitching=config.use_stitching,
-    use_linear_detrending=config.use_linear_detrending,
-    linear_detrending_threshold=config.linear_detrending_threshold,
-    use_iterative_cpm_revin=config.use_iterative_cpm_revin,
-    use_frozen_running_stats=config.use_frozen_running_stats,
-    residual_block_config=resblock_config,
-    transformer_config=transformer_config,
-  )
-  t_model.eval()
-  input_dim = 2 * (t_model.input_patch_len + t_model.output_patch_len)
-  t_model.pre_transformer_resblock.set_input_dims(input_dim)
-  return t_model
+  return make_torch_model(config)
 
 
 class TimesFM3Forecaster:
-  """Forecaster wrapping a PyTorch TimesFM3 model for inference."""
+  """Backend-neutral forecaster wrapping a pretrained TimesFM3 model."""
 
   def __init__(self, config: _ModelConfig | None = None, **kwargs):
     if config is None:
@@ -364,67 +327,82 @@ class TimesFM3Forecaster:
     )
 
   def _init_model(self):
-    """Initializes the PyTorch model and loads weights."""
-    if self.config.device is not None:
-      self.device = torch.device(self.config.device)
-    else:
-      self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    """Initializes the selected runtime backend and synchronizes model config."""
+    self._backend = create_backend(self.config)
+    self.model = self._backend.model
+    self.device = self._backend.device
+    median_q_idx = self.config.median_quantile_index
+    if median_q_idx >= len(self.model.quantiles):
+      median_q_idx = len(self.model.quantiles) // 2
+    self.config = dataclasses.replace(
+      self.config,
+      input_patch_length=self.model.input_patch_len,
+      output_patch_length=self.model.output_patch_len,
+      quantiles=list(self.model.quantiles),
+      median_quantile_index=median_q_idx,
+      residual_block_config=self.model.residual_block_config,
+      transformer_config=self.model.transformer_config,
+      use_variate_attention=self.model.use_variate_attention,
+      value_clip=self.model.value_clip,
+      use_stitching=self.model.use_stitching,
+      use_linear_detrending=self.model.use_linear_detrending,
+      linear_detrending_threshold=self.model.linear_detrending_threshold,
+      use_iterative_cpm_revin=self.model.use_iterative_cpm_revin,
+      use_frozen_running_stats=self.model.use_frozen_running_stats,
+      input_transform=self.model.input_transform,
+    )
 
-    checkpoint_path = os.path.expanduser(self.config.checkpoint_path)
-
-    # If checkpoint_path is a directory with config.json or a Hugging Face repo ID:
-    is_local_dir = os.path.isdir(checkpoint_path)
-    is_local_file = os.path.isfile(checkpoint_path)
-
-    if is_local_dir or not is_local_file:
-      # Load via PyTorchModelHubMixin.from_pretrained (downloads config.json and weights)
-      self.model = torch_model_lib.TimesFM3Torch.from_pretrained(
-        checkpoint_path,
-        cache_dir=self.config.cache_dir,
-        force_download=self.config.force_download,
-        token=self.config.token,
-        revision=self.config.revision,
-        local_files_only=self.config.local_files_only,
+  def _decode_batch(
+    self,
+    *,
+    target: np.ndarray,
+    horizon: int,
+    past_only_covariates: np.ndarray | None,
+    past_future_covariates: np.ndarray | None,
+    mask: np.ndarray,
+  ) -> np.ndarray:
+    """Runs one backend batch, retaining compatibility with injected models."""
+    if hasattr(self, "_backend"):
+      return self._backend.decode(
+        target=target,
+        horizon=horizon,
+        past_only_covariates=past_only_covariates,
+        past_future_covariates=past_future_covariates,
+        mask=mask,
       )
-      # Synchronize forecaster config with the loaded model config
-      median_q_idx = self.config.median_quantile_index
-      if median_q_idx >= len(self.model.quantiles):
-        median_q_idx = len(self.model.quantiles) // 2
 
-      self.config = dataclasses.replace(
-        self.config,
-        input_patch_length=self.model.input_patch_len,
-        output_patch_length=self.model.output_patch_len,
-        quantiles=list(self.model.quantiles),
-        median_quantile_index=median_q_idx,
-        residual_block_config=self.model.residual_block_config,
-        transformer_config=self.model.transformer_config,
-        use_variate_attention=self.model.use_variate_attention,
-        value_clip=self.model.value_clip,
-        use_stitching=self.model.use_stitching,
-        use_linear_detrending=self.model.use_linear_detrending,
-        linear_detrending_threshold=self.model.linear_detrending_threshold,
-        use_iterative_cpm_revin=self.model.use_iterative_cpm_revin,
-        use_frozen_running_stats=self.model.use_frozen_running_stats,
-        input_transform=self.model.input_transform,
+    # Tests and downstream subclasses historically replace `_init_model` and
+    # inject a Torch module directly. Keep that supported without importing
+    # Torch during normal MLX-only package import.
+    import torch
+
+    target_tensor = torch.from_numpy(target).to(self.device, dtype=torch.float32)
+    mask_tensor = torch.from_numpy(mask).to(self.device, dtype=torch.bool)
+    po_tensor = (
+      torch.from_numpy(past_only_covariates).to(self.device, dtype=torch.float32)
+      if past_only_covariates is not None
+      else None
+    )
+    pf_tensor = (
+      torch.from_numpy(past_future_covariates).to(self.device, dtype=torch.float32)
+      if past_future_covariates is not None
+      else None
+    )
+    with torch.inference_mode():
+      output = self.model.decode(
+        target=target_tensor,
+        horizon=horizon,
+        past_only_covariates=po_tensor,
+        past_future_covariates=pf_tensor,
+        mask=mask_tensor,
       )
-    else:
-      # Local file (.safetensors or .pth / .pt)
-      self.model = _make_torch_model(self.config)
-      if checkpoint_path.endswith(".safetensors"):
-        state_dict = util.load_safetensors(checkpoint_path, device=self.device)
-        self.model.load_state_dict(state_dict)
-      elif checkpoint_path.endswith((".pth", ".pt")):
-        state_dict = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(state_dict)
-      else:
-        raise ValueError(
-          f"Unsupported checkpoint path format: {checkpoint_path}. "
-          "Expected .safetensors or .pth / .pt file."
-        )
+    return output.cpu().numpy()
 
-    self.model.to(self.device)
-    self.model.eval()
+  def _cleanup_backend(self) -> None:
+    if hasattr(self, "_backend"):
+      self._backend.cleanup()
+    else:
+      try_gc(self.device)
 
   def predict(
     self,
@@ -478,9 +456,7 @@ class TimesFM3Forecaster:
       * self.config.output_patch_length
     )
     num_original_ts = len(contexts)
-    original_ts_ids = (
-      list(ts_ids) if ts_ids is not None else [None] * num_original_ts
-    )
+    original_ts_ids = list(ts_ids) if ts_ids is not None else [None] * num_original_ts
 
     if not contexts:
       return
@@ -503,17 +479,9 @@ class TimesFM3Forecaster:
     for idx, ctx in enumerate(contexts):
       target_clean = np.atleast_2d(np.array(ctx, dtype=np.float32))
       po = po_cov_list[idx]
-      po_arr = (
-        np.atleast_2d(np.array(po, dtype=np.float32))
-        if po is not None
-        else None
-      )
+      po_arr = np.atleast_2d(np.array(po, dtype=np.float32)) if po is not None else None
       pf = pf_cov_list[idx]
-      pf_arr = (
-        np.atleast_2d(np.array(pf, dtype=np.float32))
-        if pf is not None
-        else None
-      )
+      pf_arr = np.atleast_2d(np.array(pf, dtype=np.float32)) if pf is not None else None
 
       isnan = np.isnan(target_clean).all(axis=0)
       if isnan.all():
@@ -665,6 +633,10 @@ class TimesFM3Forecaster:
         self.global_context,
       )
       batch_context = max(batch_context, self.config.input_patch_length)
+      if self.config.backend == "mlx" and self.config.compile:
+        batch_context = next(
+          bucket for bucket in _MLX_CONTEXT_BUCKETS if bucket >= batch_context
+        )
 
       formatted_batch = [q.format(batch_context) for q in query_batch]
 
@@ -676,44 +648,33 @@ class TimesFM3Forecaster:
         batched_pf,
       ) = tuple(list(w) for w in zip(*formatted_batch))
 
-      tgt_torch = torch.from_numpy(np.stack(batched_tgt, axis=0)).to(
-        self.device, dtype=torch.float32
-      )
-      mask_torch = torch.from_numpy(np.stack(batched_mask, axis=0)).to(
-        self.device, dtype=torch.bool
-      )
-
-      po_torch = None
+      po_array = None
       if any(po is not None for po in batched_po):
         po_arrs = [
           po if po is not None else np.zeros_like(batched_tgt[j])
           for j, po in enumerate(batched_po)
         ]
-        po_torch = torch.from_numpy(np.stack(po_arrs, axis=0)).to(
-          self.device, dtype=torch.float32
-        )
+        po_array = np.stack(po_arrs, axis=0)
 
-      pf_torch = None
+      pf_array = None
       if any(pf is not None for pf in batched_pf):
         pf_arrs = [
           pf if pf is not None else np.zeros_like(batched_tgt[j])
           for j, pf in enumerate(batched_pf)
         ]
-        pf_torch = torch.from_numpy(np.stack(pf_arrs, axis=0)).to(
-          self.device, dtype=torch.float32
-        )
+        pf_array = np.stack(pf_arrs, axis=0)
 
-      with torch.inference_mode():
-        out_logits = self.model.decode(
-          target=tgt_torch,
+      ys.append(
+        self._decode_batch(
+          target=np.stack(batched_tgt, axis=0),
           horizon=batched_hor[0],
-          past_only_covariates=po_torch,
-          past_future_covariates=pf_torch,
-          mask=mask_torch,
+          past_only_covariates=po_array,
+          past_future_covariates=pf_array,
+          mask=np.stack(batched_mask, axis=0),
         )
-      ys.append(out_logits.cpu().numpy())
+      )
 
-    try_gc(self.device)
+    self._cleanup_backend()
     all_raw_outputs = np.concatenate(ys, axis=0)
     all_raw_outputs = all_raw_outputs[:, :num_targets_in, :, :]
 

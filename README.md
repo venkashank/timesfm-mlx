@@ -145,6 +145,39 @@ pip install timesfm[torch]
     uv pip install -e .[torch]
     ```
 
+#### Apple silicon with MLX
+
+The `timesfm-mlx` fork includes a native MLX inference backend for TimesFM 3.0:
+
+```shell
+uv sync --extra mlx
+```
+
+```python
+import numpy as np
+from timesfm3 import ModelConfig, TimesFM3Forecaster
+
+forecaster = TimesFM3Forecaster(
+    ModelConfig(
+        checkpoint_path="google/timesfm-3.0-pytorch",
+        backend="mlx",
+        dtype="float16",  # use float32 for strict Torch parity
+        compile=False,    # opt in after shapes repeat; compilation has cold cost
+        per_core_batch_size=16,
+    )
+)
+output = forecaster.predict(
+    np.sin(np.linspace(0, 12, 512)).astype(np.float32),
+    horizon=64,
+    return_quantiles=True,
+)
+```
+
+MLX loads the official safetensors directly and does not require PyTorch.
+TimesFM 3.0 weights retain their non-commercial license after loading or
+conversion. See [`MLX_MIGRATION.md`](MLX_MIGRATION.md) for parity status,
+benchmark methodology, and remaining work.
+
 --------------------------------------------------------------------------------
 
 ### Code Examples: TimesFM 3.0

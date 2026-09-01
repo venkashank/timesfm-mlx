@@ -12,26 +12,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""TimesFM3 PyTorch API."""
+"""TimesFM 3 public API with lazily loaded optional runtimes."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 from .configs import ResidualBlockConfig, StackedTransformersConfig, TransformerConfig
-from .evaluator import TimesFM3Evaluator
-from .model import TimesFM3Torch
-from .timesfm3_forecaster import (
+
+if TYPE_CHECKING:
+  from .evaluator import TimesFM3Evaluator
+  from .mlx.model import TimesFM3MLX
+  from .model import TimesFM3Torch
+  from .timesfm3_forecaster import (
     ForecastOutput,
     ModelConfig,
     TimesFM3Forecaster,
     _ModelConfig,
-)
+  )
 
-__all__ = [
+
+def __getattr__(name: str) -> Any:
+  if name == "TimesFM3Evaluator":
+    from .evaluator import TimesFM3Evaluator
+
+    return TimesFM3Evaluator
+  if name == "TimesFM3Torch":
+    from .model import TimesFM3Torch
+
+    return TimesFM3Torch
+  if name == "TimesFM3MLX":
+    from .mlx.model import TimesFM3MLX
+
+    return TimesFM3MLX
+  if name in {
     "ForecastOutput",
     "ModelConfig",
-    "ResidualBlockConfig",
-    "StackedTransformersConfig",
-    "TimesFM3Evaluator",
     "TimesFM3Forecaster",
-    "TimesFM3Torch",
-    "TransformerConfig",
     "_ModelConfig",
+  }:
+    from . import timesfm3_forecaster
+
+    return getattr(timesfm3_forecaster, name)
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+  "ForecastOutput",
+  "ModelConfig",
+  "ResidualBlockConfig",
+  "StackedTransformersConfig",
+  "TimesFM3Evaluator",
+  "TimesFM3Forecaster",
+  "TimesFM3MLX",
+  "TimesFM3Torch",
+  "TransformerConfig",
+  "_ModelConfig",
 ]
